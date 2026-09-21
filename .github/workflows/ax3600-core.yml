@@ -1,0 +1,56 @@
+name: AX3600 Router Core
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ax3600-splice
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Build linux/arm64 router core
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ~1.25.8
+          cache: true
+
+      - name: Build sing-box
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: arm64
+        run: |
+          go build -trimpath \
+            -tags "with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0" \
+            -ldflags "$(cat release/LDFLAGS) -s -w -buildid=" \
+            -o sing-box-linux-arm64 ./cmd/sing-box
+
+      - name: Compress with UPX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends upx-ucl
+          upx --best --lzma -o CrashCore.upx sing-box-linux-arm64
+
+      - name: Checksums
+        run: |
+          sha256sum CrashCore.upx sing-box-linux-arm64 | tee SHA256SUMS
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrashCore-linux-arm64
+          path: |
+            CrashCore.upx
+            sing-box-linux-arm64
+            SHA256SUMS
+          retention-days: 30
