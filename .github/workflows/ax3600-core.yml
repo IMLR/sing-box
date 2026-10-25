@@ -15,6 +15,10 @@ jobs:
   core:
     name: Build linux/arm64 router core
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CORE_VERSION: 1.14.2-reF1nd-ax3600-hyfix1
+      CORE_TAGS: with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -28,14 +32,20 @@ jobs:
       - name: Test patched splice implementation
         run: cd third_party/sing && go test ./common/bufio
 
+      - name: Test port hopping receive recovery
+        run: go test -race -tags "$CORE_TAGS" -ldflags "$(cat release/LDFLAGS)" -count=1 -timeout=60s ./.github/tests/ax3600
+
       - name: Build validation core
         env:
           CGO_ENABLED: 0
         run: |
-          go build -trimpath -tags "with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0" \
-            -ldflags "$(cat release/LDFLAGS) -X github.com/sagernet/sing-box/constant.Version=1.14.2-reF1nd-ax3600 -s -w -buildid=" \
+          go build -trimpath -tags "$CORE_TAGS" \
+            -ldflags "$(cat release/LDFLAGS) -X github.com/sagernet/sing-box/constant.Version=$CORE_VERSION -s -w -buildid=" \
             -o sing-box-linux-amd64 ./cmd/sing-box
           ./sing-box-linux-amd64 version
+
+      - name: Test Hysteria2, Gecko, port hopping and reconnect
+        run: python3 .github/tests/ax3600/hysteria_smoke.py ./sing-box-linux-amd64
 
       - name: Build sing-box
         env:
@@ -44,8 +54,8 @@ jobs:
           GOARCH: arm64
         run: |
           go build -trimpath \
-            -tags "with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0" \
-            -ldflags "$(cat release/LDFLAGS) -X github.com/sagernet/sing-box/constant.Version=1.14.2-reF1nd-ax3600 -s -w -buildid=" \
+            -tags "$CORE_TAGS" \
+            -ldflags "$(cat release/LDFLAGS) -X github.com/sagernet/sing-box/constant.Version=$CORE_VERSION -s -w -buildid=" \
             -o sing-box-linux-arm64 ./cmd/sing-box
 
       - name: Compress with UPX
@@ -53,6 +63,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends upx-ucl
           upx --best --lzma -o CrashCore.upx sing-box-linux-arm64
+          upx -t CrashCore.upx
+
+      - name: Record build provenance
+        run: |
+          git rev-parse HEAD > BUILD_INFO
+          go version -m sing-box-linux-arm64 >> BUILD_INFO
+          git diff --exit-code -- go.mod go.sum third_party/sing
 
       - name: Checksums
         run: |
@@ -67,4 +84,5 @@ jobs:
             sing-box-linux-arm64
             sing-box-linux-amd64
             SHA256SUMS
+            BUILD_INFO
           retention-days: 30
