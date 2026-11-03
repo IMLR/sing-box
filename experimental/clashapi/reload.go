@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing/common/json"
@@ -65,7 +66,7 @@ func applyConfig(server *Server) func(w http.ResponseWriter, r *http.Request) {
 		}
 		render.JSON(w, r, result)
 		if len(result.RestartRequired) > 0 && r.URL.Query().Get("reload") == "true" {
-			server.logger.Warn("sing-box reloading: ", result.RestartRequired)
+			server.logger.Warn("sing-box reloading: ", strings.Join(result.RestartRequired, "; "))
 			server.router.Reload()
 		}
 	}

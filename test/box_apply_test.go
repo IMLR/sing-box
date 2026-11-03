@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/protocol/socks"
+	"github.com/sagernet/sing/service"
 
 	"github.com/stretchr/testify/require"
 )
@@ -25,6 +27,7 @@ const (
 	applyMixedPort uint16 = 31080
 	applyEchoA     uint16 = 31081
 	applyEchoB     uint16 = 31082
+	applyClashPort uint16 = 31083
 )
 
 // applyConfig renders a small configuration: a mixed inbound, direct nodes, a
@@ -293,4 +296,46 @@ func TestApplyUnderConcurrentConnections(t *testing.T) {
 		errors = append(errors, err)
 	}
 	require.Empty(t, errors, "port A is never rejected and must stay reachable throughout")
+}
+
+type applierFunc func() (*adapter.ApplyResult, error)
+
+func (f applierFunc) ApplyConfig() (*adapter.ApplyResult, error) { return f() }
+
+type checkerFunc func() error
+
+func (f checkerFunc) CheckConfig() error { return f() }
+
+// POST /configs/apply answers with what changed, also when the change needs a
+// reload and ?reload=true asks for one.
+func TestApplyEndpointReportsReload(t *testing.T) {
+	options := applyConfig(t, map[string]string{"a": ""}, map[string][]string{"group": {"a"}}, nil, "")
+	options.Experimental = &option.ExperimentalOptions{ClashAPI: &option.ClashAPIOptions{
+		ExternalController: fmt.Sprintf("127.0.0.1:%d", applyClashPort),
+	}}
+	ctx, cancel := context.WithCancel(service.ExtendContext(globalCtx))
+	// as sing-box run does: the reload routes exist only with a checker
+	service.MustRegister[adapter.ConfigChecker](ctx, checkerFunc(func() error { return nil }))
+	instance, err := box.New(box.Options{Context: ctx, Options: options})
+	require.NoError(t, err)
+	require.NoError(t, instance.Start())
+	t.Cleanup(func() {
+		instance.Close()
+		cancel()
+	})
+	service.MustRegister[adapter.ConfigApplier](ctx, applierFunc(func() (*adapter.ApplyResult, error) {
+		return &adapter.ApplyResult{RestartRequired: []string{"log", "dns"}}, nil
+	}))
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/configs/apply?reload=true", applyClashPort)
+	var response *http.Response
+	require.Eventually(t, func() bool {
+		response, err = http.Post(url, "application/json", nil)
+		return err == nil
+	}, 5*time.Second, 50*time.Millisecond, "apply request: %v", err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	var result adapter.ApplyResult
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&result))
+	require.Equal(t, []string{"log", "dns"}, result.RestartRequired)
 }

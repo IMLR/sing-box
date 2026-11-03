@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      CORE_VERSION: 1.14.2-reF1nd-ax3600-hot1
+      CORE_VERSION: 1.14.2-reF1nd-ax3600-hot2
       CORE_TAGS: with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0
     steps:
       - name: Checkout
