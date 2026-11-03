@@ -11,6 +11,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# The build publishes itself as a release asset, so a second machine can fetch
+# the exact kernel (or the amd64 rule-set compiler) without an Actions login.
+permissions:
+  contents: write
+
 jobs:
   core:
     name: Build linux/arm64 router core
@@ -74,6 +79,34 @@ jobs:
       - name: Checksums
         run: |
           sha256sum CrashCore.upx sing-box-linux-arm64 sing-box-linux-amd64 | tee SHA256SUMS
+
+      # The amd64 build is the rule-set compiler used by the Subhub image, and
+      # the arm64 pair is what the router runs. Publishing both under the
+      # version tag means the compiler and the kernel always come from the same
+      # commit: a rule set written by a newer compiler is rejected by an older
+      # kernel, so they must not drift apart.
+      - name: Publish release assets
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$CORE_VERSION"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "AX3600 core $CORE_VERSION" \
+              --notes "Router kernel for Xiaomi AX3600, built from $GITHUB_SHA." \
+              --prerelease
+          fi
+          gh release upload "$tag" \
+            CrashCore.upx sing-box-linux-arm64 sing-box-linux-amd64 SHA256SUMS BUILD_INFO \
+            --clobber
+          gh release edit "$tag" \
+            --notes "Router kernel for Xiaomi AX3600.
+
+          Commit: $GITHUB_SHA
+          Built from: $GITHUB_REF_NAME
+          Artifacts: sing-box-linux-arm64 (router), CrashCore.upx (router, packed),
+          sing-box-linux-amd64 (rule-set compiler for the Subhub image)."
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
