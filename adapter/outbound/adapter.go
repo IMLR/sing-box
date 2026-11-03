@@ -43,3 +43,9 @@ func (a *Adapter) Network() []string {
 func (a *Adapter) Dependencies() []string {
 	return a.dependencies
 }
+
+// SetDependencies replaces the dependency list of a group whose members were
+// updated in place, so the manager's dependency bookkeeping follows it.
+func (a *Adapter) SetDependencies(dependencies []string) {
+	a.dependencies = dependencies
+}

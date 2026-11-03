@@ -17,7 +17,7 @@ func TestDisabledRuleFallsThroughPreMatchAndMatch(t *testing.T) {
 	disabled := &preMatchQUICRule{action: &R.RuleActionRoute{Outbound: "disabled"}, disabled: true}
 	bypass := &preMatchQUICRule{action: &R.RuleActionBypass{}}
 	next := &preMatchQUICRule{action: &R.RuleActionRoute{Outbound: "next"}}
-	router.rules = []adapter.Rule{disabled, bypass, next}
+	router.setRules([]adapter.Rule{disabled, bypass, next})
 	require.Equal(t, adapter.PreMatchBypass, router.PreMatch(metadata, nil).Action)
 	matched, _, _, _, err := router.matchRule(context.Background(), &metadata, nil, nil)
 	require.NoError(t, err)

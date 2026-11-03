@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"runtime"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -37,13 +39,16 @@ type Router struct {
 	connection        adapter.ConnectionManager
 	network           adapter.NetworkManager
 	httpClientManager adapter.HTTPClientManager
-	rules             []adapter.Rule
-	ruleByUUID        map[string]adapter.Rule
+	ruleSnapshot      atomic.Pointer[routeRules]
+	closing           chan struct{}
+	closeOnce         sync.Once
 	needFindProcess   bool
 	needFindNeighbor  bool
 	leaseFiles        []string
+	ruleSetAccess     sync.RWMutex
 	ruleSets          []adapter.RuleSet
 	ruleSetMap        map[string]adapter.RuleSet
+	ruleSetOptions    map[string]option.RuleSet
 	ruleSetUpdater    *R.RuleSetUpdater
 	processSearcher   process.Searcher
 	processCache      *freelru.Cache[processCacheKey, processCacheEntry]
@@ -72,9 +77,9 @@ func NewRouter(ctx context.Context, logFactory log.Factory, options option.Route
 		connection:        service.FromContext[adapter.ConnectionManager](ctx),
 		network:           service.FromContext[adapter.NetworkManager](ctx),
 		httpClientManager: service.FromContext[adapter.HTTPClientManager](ctx),
-		rules:             make([]adapter.Rule, 0, len(options.Rules)),
-		ruleByUUID:        make(map[string]adapter.Rule),
 		ruleSetMap:        make(map[string]adapter.RuleSet),
+		ruleSetOptions:    make(map[string]option.RuleSet),
+		closing:           make(chan struct{}),
 		needFindProcess:   hasRule(options.Rules, isProcessRule) || hasDNSRule(dnsOptions.Rules, isProcessDNSRule) || options.FindProcess,
 		needFindNeighbor:  hasRule(options.Rules, isNeighborRule) || hasDNSRule(dnsOptions.Rules, isNeighborDNSRule) || hasLocalNeighborDNSServer(dnsOptions.Servers) || options.FindNeighbor,
 		leaseFiles:        options.DHCPLeaseFiles,
@@ -91,19 +96,11 @@ func (r *Router) Initialize(rules []option.Rule, ruleSets []option.RuleSet) erro
 	if r.defaultDomainMatchStrategy == C.DomainMatchStrategyFQDNOnly || r.defaultDomainMatchStrategy == C.DomainMatchStrategySniffHostOnly {
 		return E.New("default_domain_match_strategy cannot be fqdn_only or sniffhost_only")
 	}
-	for i, options := range rules {
-		err := R.ValidateNoNestedRuleActions(options)
-		if err != nil {
-			return E.Cause(err, "parse rule[", i, "]")
-		}
-		rule, err := R.NewRule(r.ctx, r.logger, options, false)
-		if err != nil {
-			return E.Cause(err, "parse rule[", i, "]")
-		}
-		uuid := rule.UUID()
-		r.rules = append(r.rules, rule)
-		r.ruleByUUID[uuid] = rule
+	snapshot, err := r.newRouteRules(rules)
+	if err != nil {
+		return err
 	}
+	r.ruleSnapshot.Store(snapshot)
 	for i, options := range ruleSets {
 		for _, tag := range options.Tag {
 			if _, exists := r.ruleSetMap[tag]; exists {
@@ -115,6 +112,7 @@ func (r *Router) Initialize(rules []option.Rule, ruleSets []option.RuleSet) erro
 			}
 			r.ruleSets = append(r.ruleSets, ruleSet)
 			r.ruleSetMap[tag] = ruleSet
+			r.ruleSetOptions[tag] = options
 		}
 	}
 	return nil
@@ -221,7 +219,7 @@ func (r *Router) Start(stage adapter.StartStage) error {
 			r.processCache = processCache
 		}
 	case adapter.StartStatePostStart:
-		for i, rule := range r.rules {
+		for i, rule := range r.loadRules() {
 			monitor.Start("initialize rule[", i, "]")
 			err := rule.Start()
 			monitor.Finish()
@@ -244,6 +242,7 @@ func (r *Router) Start(stage adapter.StartStage) error {
 }
 
 func (r *Router) Close() error {
+	r.closeOnce.Do(func() { close(r.closing) })
 	r.quicSniffCache.Close()
 	monitor := taskmonitor.New(r.logger, C.StopTimeout)
 	var err error
@@ -254,7 +253,7 @@ func (r *Router) Close() error {
 		})
 		monitor.Finish()
 	}
-	for i, rule := range r.rules {
+	for i, rule := range r.loadRules() {
 		monitor.Start("close rule[", i, "]")
 		err = E.Append(err, rule.Close(), func(err error) error {
 			return E.Cause(err, "close rule[", i, "]")
@@ -286,16 +285,20 @@ func (r *Router) Close() error {
 }
 
 func (r *Router) RuleSets() []adapter.RuleSet {
-	return r.ruleSets
+	r.ruleSetAccess.RLock()
+	defer r.ruleSetAccess.RUnlock()
+	return slices.Clone(r.ruleSets)
 }
 
 func (r *Router) RuleSet(tag string) (adapter.RuleSet, bool) {
+	r.ruleSetAccess.RLock()
+	defer r.ruleSetAccess.RUnlock()
 	ruleSet, loaded := r.ruleSetMap[tag]
 	return ruleSet, loaded
 }
 
 func (r *Router) Rules() []adapter.Rule {
-	return r.rules
+	return r.loadRules()
 }
 
 func (r *Router) AppendTracker(tracker adapter.ConnectionTracker) {

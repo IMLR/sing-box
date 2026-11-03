@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -67,6 +68,11 @@ type Box struct {
 	internalService     []adapter.LifecycleService
 	reloadChan          chan struct{}
 	done                chan struct{}
+
+	// options is the configuration currently applied, the baseline Apply
+	// compares the next one against.
+	options     option.Options
+	applyAccess sync.Mutex
 }
 
 type Options struct {
@@ -123,6 +129,7 @@ func Context(
 
 func New(options Options) (*Box, error) {
 	createdAt := time.Now()
+	applied := options.Options
 	reloadChan := make(chan struct{}, 1)
 	ctx := options.Context
 	if ctx == nil {
@@ -548,6 +555,7 @@ func New(options Options) (*Box, error) {
 		internalService:     internalServices,
 		reloadChan:          reloadChan,
 		done:                make(chan struct{}),
+		options:             applied,
 	}, nil
 }
 

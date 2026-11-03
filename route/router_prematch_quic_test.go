@@ -43,11 +43,11 @@ func TestPreMatchQUICCacheDomainRule(t *testing.T) {
 			},
 		})
 		require.NoError(t, err)
-		router.rules = []adapter.Rule{
+		router.setRules([]adapter.Rule{
 			&preMatchQUICRule{action: sniffAction},
 			rejectRule,
 			&preMatchQUICRule{action: &R.RuleActionBypass{}},
-		}
+		})
 		result := router.PreMatch(metadata, quicShortPacket())
 		require.Equal(t, adapter.PreMatchDrop, result.Action)
 		host, loaded := router.lookupQUICSniff(metadata.Source, metadata.Destination)
@@ -71,12 +71,12 @@ func TestPreMatchQUICFlowCacheClose(t *testing.T) {
 			router.cacheQUICSniff(metadata.Source, metadata.Destination, "example.com")
 
 			router.outbound = &preMatchQUICOutbounds{outbound: &preMatchQUICOutbound{}}
-			router.rules = []adapter.Rule{
+			router.setRules([]adapter.Rule{
 				&preMatchQUICRule{action: &R.RuleActionSniff{}},
 				&preMatchQUICRule{action: &R.RuleActionRoute{RuleActionRouteOptions: R.RuleActionRouteOptions{
 					OverrideAddress: M.ParseSocksaddr("192.0.2.1:0"),
 				}}},
-			}
+			})
 			result := router.PreMatch(metadata, quicShortPacket())
 			require.Equal(t, adapter.PreMatchFlow, result.Action)
 			require.Equal(t, netip.MustParseAddrPort("192.0.2.1:443"), result.Destination)

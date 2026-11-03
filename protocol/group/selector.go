@@ -29,6 +29,7 @@ func RegisterSelector(registry *outbound.Registry) {
 }
 
 var (
+	_ adapter.OutboundGroupMembers    = (*Selector)(nil)
 	_ adapter.PreMatchOutboundGroup   = (*Selector)(nil)
 	_ adapter.ConnectionHandler       = (*Selector)(nil)
 	_ adapter.PacketConnectionHandler = (*Selector)(nil)
@@ -295,6 +296,71 @@ func (s *Selector) onProviderUpdated(tag string) error {
 	s.stateAccess.Unlock()
 	s.providerAccess.Unlock()
 	if previous != detour {
+		s.interruptGroup.Interrupt(s.interruptExternalConnections)
+		if s.history != nil {
+			s.history.NotifyUpdated()
+		}
+	}
+	return nil
+}
+
+// UpdateMembers replaces the group's own members in place. The selection is
+// kept when the selected tag survives, rebound to the outbound now registered
+// under it; only a selection that has to move interrupts the group's
+// connections. Provider members are kept as they are.
+func (s *Selector) UpdateMembers(tags []string, defaultTag string) error {
+	s.providerAccess.Lock()
+	defer s.providerAccess.Unlock()
+	memberTags := make([]string, 0, len(tags))
+	outboundByTag := make(map[string]adapter.Outbound, len(tags))
+	for i, tag := range tags {
+		detour, loaded := s.outbound.Outbound(tag)
+		if !loaded {
+			return E.New("outbound ", i, " not found: ", tag)
+		}
+		memberTags = append(memberTags, tag)
+		outboundByTag[tag] = detour
+	}
+	for _, providerTag := range s.providerTags {
+		for _, detour := range s.outboundsCache[providerTag] {
+			memberTags = append(memberTags, detour.Tag())
+			outboundByTag[detour.Tag()] = detour
+		}
+	}
+	if len(memberTags) == 0 {
+		detour, loaded := s.outbound.Outbound("Compatible")
+		if !loaded {
+			return E.New("fallback outbound not found: Compatible")
+		}
+		memberTags = append(memberTags, detour.Tag())
+		outboundByTag[detour.Tag()] = detour
+	}
+	if defaultTag != "" {
+		if _, loaded := outboundByTag[defaultTag]; !loaded {
+			return E.New("default outbound not found: ", defaultTag)
+		}
+	}
+	s.stateAccess.Lock()
+	var selected adapter.Outbound
+	if current := s.selected.Load(); current != nil {
+		selected = outboundByTag[current.Tag()]
+	}
+	previousDefault := s.defaultTag
+	s.defaultTag = defaultTag
+	if selected == nil {
+		var err error
+		selected, err = s.outboundSelect(outboundByTag, memberTags)
+		if err != nil {
+			s.defaultTag = previousDefault
+			s.stateAccess.Unlock()
+			return err
+		}
+	}
+	s.SetDependencies(slices.Clone(tags))
+	s.tags, s.outbounds = memberTags, outboundByTag
+	previous := s.selected.Swap(selected)
+	s.stateAccess.Unlock()
+	if previous == nil || previous.Tag() != selected.Tag() {
 		s.interruptGroup.Interrupt(s.interruptExternalConnections)
 		if s.history != nil {
 			s.history.NotifyUpdated()

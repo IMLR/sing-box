@@ -17,6 +17,7 @@ func configRouter(server *Server, logFactory log.Factory) http.Handler {
 	// Like mihomo in embed mode, PUT is not allowed if reloading is not supported.
 	if server.configChecker() != nil {
 		r.Put("/", reload(server))
+		r.Post("/apply", applyConfig(server))
 	}
 	r.Patch("/", patchConfigs(server))
 	return r

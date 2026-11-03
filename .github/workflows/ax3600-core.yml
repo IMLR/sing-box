@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      CORE_VERSION: 1.14.2-reF1nd-ax3600-hyfix1
+      CORE_VERSION: 1.14.2-reF1nd-ax3600-hot1
       CORE_TAGS: with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0
     steps:
       - name: Checkout
@@ -39,6 +39,11 @@ jobs:
 
       - name: Test port hopping receive recovery
         run: go test -race -tags "$CORE_TAGS" -ldflags "$(cat release/LDFLAGS)" -count=1 -timeout=60s ./.github/tests/ax3600
+
+      - name: Test configuration hot apply
+        run: |
+          go test -race -tags "$CORE_TAGS" -count=1 -timeout=300s ./route/ ./protocol/group/ ./common/dialer/ ./adapter/... ./experimental/clashapi/
+          cd test && go test -race -tags "$CORE_TAGS" -count=1 -timeout=300s -run TestApply .
 
       - name: Build validation core
         env:

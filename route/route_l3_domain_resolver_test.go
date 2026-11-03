@@ -136,9 +136,6 @@ func TestPreMatchFlowResolvesSniffOverrideDestination(t *testing.T) {
 		outbound:     &testL3OutboundManager{defaultOutbound: selectedOutbound},
 		dns:          dnsRouter,
 		dnsTransport: new(testL3DNSTransportManager),
-		rules: []adapter.Rule{
-			&testL3Rule{action: new(R.RuleActionSniffOverrideDestination)},
-		},
 	}
 	originalDestination := M.ParseSocksaddr("192.0.2.2:443")
 	metadata := adapter.InboundContext{
@@ -147,6 +144,9 @@ func TestPreMatchFlowResolvesSniffOverrideDestination(t *testing.T) {
 		Destination: originalDestination,
 		SniffHost:   "example.com",
 	}
+	router.setRules([]adapter.Rule{
+		&testL3Rule{action: new(R.RuleActionSniffOverrideDestination)},
+	})
 
 	result := router.PreMatch(metadata, nil)
 

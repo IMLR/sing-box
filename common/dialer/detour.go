@@ -51,7 +51,20 @@ func InitializeDetour(dialer N.Dialer) error {
 
 func (d *DetourDialer) Dialer() (N.Dialer, error) {
 	d.initOnce.Do(d.init)
-	return d.dialer, d.initErr
+	if d.initErr != nil {
+		return nil, d.initErr
+	}
+	// Look the outbound up on every use instead of keeping the first instance:
+	// applying a configuration may recreate it under the same tag and close
+	// the old one, and a detour must follow the tag, not the instance.
+	if d.detour != "" {
+		if current, loaded := d.outboundManager.Outbound(d.detour); loaded {
+			return current, nil
+		}
+	} else if current := d.outboundManager.Default(); current != nil {
+		return current, nil
+	}
+	return d.dialer, nil
 }
 
 func (d *DetourDialer) init() {

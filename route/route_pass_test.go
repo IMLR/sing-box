@@ -24,7 +24,7 @@ func TestPassFallsThroughMatching(t *testing.T) {
 			first := &preMatchQUICRule{action: &R.RuleActionRoute{Outbound: tag, RuleActionRouteOptions: R.RuleActionRouteOptions{OverrideAddress: M.ParseSocksaddr("192.0.2.1:0")}}}
 			last := &preMatchQUICRule{action: &R.RuleActionBypass{}}
 			next := &preMatchQUICRule{action: &R.RuleActionRoute{Outbound: "next"}}
-			router.rules = []adapter.Rule{first, last, next}
+			router.setRules([]adapter.Rule{first, last, next})
 			destination := metadata.Destination
 			require.Equal(t, adapter.PreMatchBypass, router.PreMatch(metadata, nil).Action)
 			matched, _, _, _, err := router.matchRule(context.Background(), &metadata, nil, nil)

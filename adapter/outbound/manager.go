@@ -215,10 +215,17 @@ func (m *Manager) Default() adapter.Outbound {
 
 func (m *Manager) Remove(tag string) error {
 	m.access.Lock()
-	defer m.access.Unlock()
 	outbound, found := m.outboundByTag[tag]
 	if !found {
+		m.access.Unlock()
 		return os.ErrInvalid
+	}
+	// Refuse before changing anything: deleting first and checking afterwards
+	// left an outbound that was gone from the table but still open and still
+	// listed as a dependency.
+	if dependBy := m.dependByTag[tag]; len(dependBy) > 0 {
+		m.access.Unlock()
+		return E.New("outbound[", tag, "] is depended by ", strings.Join(dependBy, ", "))
 	}
 	delete(m.outboundByTag, tag)
 	index := common.Index(m.outbounds, func(it adapter.Outbound) bool {
@@ -227,8 +234,7 @@ func (m *Manager) Remove(tag string) error {
 	if index == -1 {
 		panic("invalid inbound index")
 	}
-	m.outbounds = append(m.outbounds[:index], m.outbounds[index+1:]...)
-	started := m.started
+	m.outbounds = append(m.outbounds[:index:index], m.outbounds[index+1:]...)
 	if m.defaultOutbound == outbound {
 		if len(m.outbounds) > 0 {
 			m.defaultOutbound = m.outbounds[0]
@@ -237,22 +243,62 @@ func (m *Manager) Remove(tag string) error {
 			m.defaultOutbound = nil
 		}
 	}
-	dependBy := m.dependByTag[tag]
-	if len(dependBy) > 0 {
-		return E.New("outbound[", tag, "] is depended by ", strings.Join(dependBy, ", "))
-	}
-	dependencies := outbound.Dependencies()
-	for _, dependency := range dependencies {
-		if len(m.dependByTag[dependency]) == 1 {
-			delete(m.dependByTag, dependency)
-		} else {
-			m.dependByTag[dependency] = common.Filter(m.dependByTag[dependency], func(it string) bool {
-				return it != tag
-			})
-		}
-	}
+	m.removeDependencies(tag, outbound.Dependencies())
+	started := m.started
+	m.access.Unlock()
 	if started {
 		return common.Close(outbound)
+	}
+	return nil
+}
+
+func (m *Manager) removeDependencies(tag string, dependencies []string) {
+	for _, dependency := range dependencies {
+		remaining := common.Filter(m.dependByTag[dependency], func(it string) bool {
+			return it != tag
+		})
+		if len(remaining) == 0 {
+			delete(m.dependByTag, dependency)
+		} else {
+			m.dependByTag[dependency] = remaining
+		}
+	}
+}
+
+// RebuildDependencies recomputes which outbounds depend on which, after
+// groups changed their members in place.
+func (m *Manager) RebuildDependencies() {
+	m.access.Lock()
+	defer m.access.Unlock()
+	dependByTag := make(map[string][]string)
+	for _, outbound := range m.outbounds {
+		for _, dependency := range outbound.Dependencies() {
+			dependByTag[dependency] = append(dependByTag[dependency], outbound.Tag())
+		}
+	}
+	m.dependByTag = dependByTag
+}
+
+// SetDefault points the default outbound at tag, for a changed route.final.
+func (m *Manager) SetDefault(tag string) error {
+	m.access.Lock()
+	defer m.access.Unlock()
+	if tag == "" {
+		m.defaultTag = ""
+		return nil
+	}
+	outbound, loaded := m.outboundByTag[tag]
+	if !loaded {
+		endpoint, endpointLoaded := m.endpoint.Get(tag)
+		if !endpointLoaded {
+			return E.New("default outbound not found: ", tag)
+		}
+		outbound = endpoint
+	}
+	m.defaultTag = tag
+	if m.defaultOutbound != outbound {
+		m.defaultOutbound = outbound
+		m.logger.Info("updated default outbound to ", tag)
 	}
 	return nil
 }
@@ -277,21 +323,20 @@ func (m *Manager) Create(ctx context.Context, router adapter.Router, logger log.
 		}
 	}
 	m.access.Lock()
-	defer m.access.Unlock()
-	if existsOutbound, loaded := m.outboundByTag[tag]; loaded {
-		if m.started {
-			err = common.Close(existsOutbound)
-			if err != nil {
-				return E.Cause(err, "close outbound/", existsOutbound.Type(), "[", existsOutbound.Tag(), "]")
-			}
-		}
+	// A replaced outbound is swapped out in the same locked step that registers
+	// its successor, so a lookup never finds the tag missing, and it is closed
+	// only after the lock is released: closing can wait on the network.
+	existsOutbound, replaced := m.outboundByTag[tag]
+	if replaced {
 		existsIndex := common.Index(m.outbounds, func(it adapter.Outbound) bool {
 			return it == existsOutbound
 		})
 		if existsIndex == -1 {
+			m.access.Unlock()
 			panic("invalid inbound index")
 		}
-		m.outbounds = append(m.outbounds[:existsIndex], m.outbounds[existsIndex+1:]...)
+		m.outbounds = append(m.outbounds[:existsIndex:existsIndex], m.outbounds[existsIndex+1:]...)
+		m.removeDependencies(tag, existsOutbound.Dependencies())
 	}
 	m.outbounds = append(m.outbounds, outbound)
 	m.outboundByTag[tag] = outbound
@@ -299,10 +344,18 @@ func (m *Manager) Create(ctx context.Context, router adapter.Router, logger log.
 	for _, dependency := range dependencies {
 		m.dependByTag[dependency] = append(m.dependByTag[dependency], tag)
 	}
-	if tag == m.defaultTag || (m.defaultTag == "" && m.defaultOutbound == nil) {
+	if tag == m.defaultTag || (m.defaultTag == "" && (m.defaultOutbound == nil || m.defaultOutbound == existsOutbound)) {
 		m.defaultOutbound = outbound
 		if m.started {
 			m.logger.Info("updated default outbound to ", outbound.Tag())
+		}
+	}
+	started := m.started
+	m.access.Unlock()
+	if replaced && started {
+		err = common.Close(existsOutbound)
+		if err != nil {
+			return E.Cause(err, "close outbound/", existsOutbound.Type(), "[", existsOutbound.Tag(), "]")
 		}
 	}
 	return nil

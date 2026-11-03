@@ -348,7 +348,7 @@ func (r *Router) PreMatch(metadata adapter.InboundContext, firstPacket []byte) a
 	if err != nil {
 		return continueResult
 	}
-	for currentRuleIndex, currentRule := range r.rules {
+	for currentRuleIndex, currentRule := range r.loadRules() {
 		if currentRule.Disabled() {
 			continue
 		}
@@ -670,7 +670,7 @@ func (r *Router) matchRule(
 	}
 
 match:
-	for currentRuleIndex, currentRule := range r.rules {
+	for currentRuleIndex, currentRule := range r.loadRules() {
 		if currentRule.Disabled() {
 			continue
 		}
@@ -1061,6 +1061,6 @@ func isPassOutbound(manager adapter.OutboundManager, tag string) bool {
 }
 
 func (r *Router) Rule(uuid string) (adapter.Rule, bool) {
-	rule, exists := r.ruleByUUID[uuid]
+	rule, exists := r.ruleSnapshot.Load().byUUID[uuid]
 	return rule, exists
 }

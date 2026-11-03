@@ -33,6 +33,7 @@ func RegisterURLTest(registry *outbound.Registry) {
 }
 
 var (
+	_ adapter.OutboundGroupMembers    = (*URLTest)(nil)
 	_ adapter.PreMatchOutboundGroup   = (*URLTest)(nil)
 	_ adapter.InterfaceUpdateListener = (*URLTest)(nil)
 )
@@ -312,6 +313,48 @@ func (s *URLTest) onProviderUpdated(tag string) error {
 		return E.Cause(err, s.Tag())
 	}
 	s.outboundsCache = outboundsCache
+	s.group.replaceOutbounds(outbounds)
+	s.providerAccess.Unlock()
+	if s.isGroupActive() {
+		s.group.access.Lock()
+		if s.group.ticker != nil {
+			s.group.ticker.Reset(s.group.interval)
+		}
+		s.group.access.Unlock()
+		s.providerUpdateCheck.Schedule(func() {
+			_, _ = s.group.urlTestWait(s.ctx, false)
+		})
+	}
+	return nil
+}
+
+// UpdateMembers replaces the group's own members in place and re-tests them
+// if the group is in use. A member recreated under the same tag keeps its
+// place as the selection. Provider members are kept as they are.
+func (s *URLTest) UpdateMembers(tags []string, _ string) error {
+	s.providerAccess.Lock()
+	outbounds := make([]adapter.Outbound, 0, len(tags))
+	for i, tag := range tags {
+		detour, loaded := s.outbound.Outbound(tag)
+		if !loaded {
+			s.providerAccess.Unlock()
+			return E.New("outbound ", i, " not found: ", tag)
+		}
+		outbounds = append(outbounds, detour)
+	}
+	for _, providerTag := range s.providerTags {
+		outbounds = append(outbounds, s.outboundsCache[providerTag]...)
+	}
+	if len(outbounds) == 0 {
+		detour, loaded := s.outbound.Outbound("Compatible")
+		if !loaded {
+			s.providerAccess.Unlock()
+			return E.New("fallback outbound not found: Compatible")
+		}
+		outbounds = append(outbounds, detour)
+	}
+	s.SetDependencies(slices.Clone(tags))
+	s.tags = slices.Clone(tags)
 	s.group.replaceOutbounds(outbounds)
 	s.providerAccess.Unlock()
 	if s.isGroupActive() {
@@ -769,12 +812,9 @@ func (g *URLTestGroup) replaceOutbounds(outbounds []adapter.Outbound) {
 	selectedOutboundTCP := g.selectedOutboundTCP.Load()
 	selectedOutboundUDP := g.selectedOutboundUDP.Load()
 	g.storeOutbounds(outbounds)
-	if !containsOutbound(outbounds, selectedOutboundTCP) {
-		g.selectedOutboundTCP.Store(nil)
-	}
-	if !containsOutbound(outbounds, selectedOutboundUDP) {
-		g.selectedOutboundUDP.Store(nil)
-	}
+	// a member recreated under the same tag stays selected, as its new instance
+	g.selectedOutboundTCP.Store(sameTagOutbound(outbounds, selectedOutboundTCP))
+	g.selectedOutboundUDP.Store(sameTagOutbound(outbounds, selectedOutboundUDP))
 	if g.selectedOutboundTCP.Load() == nil {
 		if outbound, _ := g.Select(N.NetworkTCP); outbound != nil {
 			g.selectedOutboundTCP.Store(outbound)
@@ -785,8 +825,8 @@ func (g *URLTestGroup) replaceOutbounds(outbounds []adapter.Outbound) {
 			g.selectedOutboundUDP.Store(outbound)
 		}
 	}
-	updated := (selectedOutboundTCP != nil && g.selectedOutboundTCP.Load() != selectedOutboundTCP) ||
-		(selectedOutboundUDP != nil && g.selectedOutboundUDP.Load() != selectedOutboundUDP)
+	updated := tagChanged(selectedOutboundTCP, g.selectedOutboundTCP.Load()) ||
+		tagChanged(selectedOutboundUDP, g.selectedOutboundUDP.Load())
 	selected := g.selectedOutboundTCP.Load() != selectedOutboundTCP || g.selectedOutboundUDP.Load() != selectedOutboundUDP
 	g.updateAccess.Unlock()
 	if updated {
@@ -797,9 +837,25 @@ func (g *URLTestGroup) replaceOutbounds(outbounds []adapter.Outbound) {
 	}
 }
 
-func containsOutbound(outbounds []adapter.Outbound, selected adapter.Outbound) bool {
+// sameTagOutbound finds the member carrying the selected outbound's tag, which
+// is the selected instance itself or the one that replaced it.
+func sameTagOutbound(outbounds []adapter.Outbound, selected adapter.Outbound) adapter.Outbound {
 	if selected == nil {
-		return true
+		return nil
 	}
-	return slices.Contains(outbounds, selected)
+	for _, detour := range outbounds {
+		if detour.Tag() == selected.Tag() {
+			return detour
+		}
+	}
+	return nil
+}
+
+// tagChanged reports a selection that moved to another member; the same tag
+// on a new instance is not a move.
+func tagChanged(previous, current adapter.Outbound) bool {
+	if previous == nil {
+		return false
+	}
+	return current == nil || current.Tag() != previous.Tag()
 }

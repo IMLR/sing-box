@@ -82,9 +82,6 @@ func TestL3UDPSniffOverrideDestinationNAT(t *testing.T) {
 		outbound:     &testL3OutboundManager{defaultOutbound: selectedOutbound},
 		dns:          dnsRouter,
 		dnsTransport: new(testL3DNSTransportManager),
-		rules: []adapter.Rule{
-			&testL3Rule{action: new(R.RuleActionSniffOverrideDestination)},
-		},
 	}
 	handler := &testL3RouterNATHandler{
 		router: &testL3SniffHostRouter{
@@ -92,6 +89,9 @@ func TestL3UDPSniffOverrideDestinationNAT(t *testing.T) {
 			sniffHost: "example.com",
 		},
 	}
+	router.setRules([]adapter.Rule{
+		&testL3Rule{action: new(R.RuleActionSniffOverrideDestination)},
+	})
 	writeback := new(testL3NATWriteback)
 	dispatcher := tun.NewForwardDispatcher(handler, writeback, log.NewNOPFactory().NewLogger("forward"), 0, 0)
 	defer dispatcher.Close()

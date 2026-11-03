@@ -94,6 +94,12 @@ func (s *abstractRuleSet) DecRef() {
 	}
 }
 
+// RefCount is how many rules hold the set. A set nothing holds after start
+// has had its rules released by Cleanup and must be reloaded before use.
+func (s *abstractRuleSet) RefCount() int32 {
+	return s.refs.Load()
+}
+
 func (s *abstractRuleSet) Cleanup() {
 	if s.refs.Load() == 0 {
 		s.rules = nil

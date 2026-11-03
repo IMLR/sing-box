@@ -139,6 +139,47 @@ func (f configCheckerFunc) CheckConfig() error {
 	return f()
 }
 
+// configApplierFunc exposes applyInPlace to the Clash API.
+type configApplierFunc func() (*adapter.ApplyResult, error)
+
+func (f configApplierFunc) ApplyConfig() (*adapter.ApplyResult, error) {
+	return f()
+}
+
+// applyConfig reads the configuration files again and applies them to the
+// running instance. It never creates a second instance: the full check that a
+// reload performs builds one, which a small router cannot spare memory for.
+func applyConfig(instance *box.Box) (*adapter.ApplyResult, error) {
+	options, err := readConfigAndMerge()
+	if err != nil {
+		return nil, err
+	}
+	return instance.Apply(options)
+}
+
+// applyInPlace tries an in-place apply and reports whether it covered the
+// change; when it did not, the caller falls back to a full reload.
+func applyInPlace(instance *box.Box) bool {
+	result, err := applyConfig(instance)
+	if err != nil {
+		log.Error(E.Cause(err, "apply configuration"), ", reloading instead")
+		return false
+	}
+	if len(result.RestartRequired) > 0 {
+		log.Warn("configuration needs a reload: ", strings.Join(result.RestartRequired, "; "))
+		return false
+	}
+	if !result.Changed() {
+		log.Info("configuration unchanged")
+		return true
+	}
+	o := result.Outbounds
+	log.Info("configuration applied: outbounds +", len(o.Added), " ~", len(o.Updated), " -", len(o.Removed),
+		", groups updated ", len(o.Regrouped), ", route rules replaced ", result.RouteRules,
+		", rule-sets +", len(result.RuleSetsAdded), " -", len(result.RuleSetsRemoved))
+	return true
+}
+
 func create(options option.Options) (*box.Box, context.CancelFunc, error) {
 	if disableColor {
 		if options.Log == nil {
@@ -178,6 +219,9 @@ func create(options option.Options) (*box.Box, context.CancelFunc, error) {
 		cancel()
 		return nil, nil, E.Cause(err, "start service")
 	}
+	service.MustRegister[adapter.ConfigApplier](ctx, configApplierFunc(func() (*adapter.ApplyResult, error) {
+		return applyConfig(instance)
+	}))
 	return instance, cancel, nil
 }
 
@@ -208,6 +252,9 @@ func run() error {
 			select {
 			case osSignal := <-osSignals:
 				if osSignal == syscall.SIGHUP {
+					if applyInPlace(instance) {
+						continue
+					}
 					err = check()
 					if err != nil {
 						log.Error(E.Cause(err, "reload service"))
@@ -216,6 +263,9 @@ func run() error {
 					reloadTag = true
 				}
 			case <-instance.ReloadChan():
+				if applyInPlace(instance) {
+					continue
+				}
 				err = check()
 				if err != nil {
 					log.Error(E.Cause(err, "reload service"))
