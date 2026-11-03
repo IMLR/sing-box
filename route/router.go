@@ -42,6 +42,8 @@ type Router struct {
 	ruleSnapshot      atomic.Pointer[routeRules]
 	closing           chan struct{}
 	closeOnce         sync.Once
+	retireAccess      sync.Mutex
+	retiring          []*retirement
 	needFindProcess   bool
 	needFindNeighbor  bool
 	leaseFiles        []string
@@ -243,6 +245,7 @@ func (r *Router) Start(stage adapter.StartStage) error {
 
 func (r *Router) Close() error {
 	r.closeOnce.Do(func() { close(r.closing) })
+	r.closeRetiring()
 	r.quicSniffCache.Close()
 	monitor := taskmonitor.New(r.logger, C.StopTimeout)
 	var err error

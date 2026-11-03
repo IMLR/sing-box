@@ -3,6 +3,7 @@ package route
 import (
 	"errors"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -191,33 +192,64 @@ func (r *Router) ApplyRoute(rules []option.Rule, ruleSets []option.RuleSet) (add
 			added = append(added, tag)
 		}
 	}
-	for _, ruleSet := range created {
-		ruleSet.Cleanup()
-	}
 	r.restartRuleSetUpdater(created, displaced)
-	go r.retireRules(retired, displaced)
+	entry := &retirement{rules: retired, ruleSets: displaced}
+	r.retireAccess.Lock()
+	r.retiring = append(r.retiring, entry)
+	r.retireAccess.Unlock()
+	go r.retireLater(entry)
 	return added, removed, nil
 }
 
-// retireRules closes a replaced rule generation once no match can still be
-// using it, then the rule sets it was the last holder of.
-func (r *Router) retireRules(retired *routeRules, displaced []adapter.RuleSet) {
+// retirement is a replaced rule generation and the rule sets it displaced,
+// waiting until no match can still be using them. Rule sets are not cleaned
+// up at runtime: Cleanup writes without a lock and is only safe before
+// traffic, so a set nothing refers to anymore keeps its rules until closed.
+type retirement struct {
+	rules    *routeRules
+	ruleSets []adapter.RuleSet
+}
+
+func (e *retirement) close() {
+	if e.rules != nil {
+		for _, rule := range e.rules.rules {
+			_ = rule.Close()
+		}
+	}
+	for _, ruleSet := range e.ruleSets {
+		_ = ruleSet.Close()
+	}
+}
+
+func (r *Router) retireLater(entry *retirement) {
 	timer := time.NewTimer(ruleRetireDelay)
 	defer timer.Stop()
 	select {
 	case <-timer.C:
 	case <-r.closing:
+		// Close takes every pending retirement itself, in order with the
+		// rest of shutdown
+		return
 	}
-	if retired != nil {
-		for _, rule := range retired.rules {
-			_ = rule.Close()
-		}
+	r.retireAccess.Lock()
+	index := slices.Index(r.retiring, entry)
+	if index >= 0 {
+		r.retiring = slices.Delete(r.retiring, index, index+1)
 	}
-	for _, ruleSet := range displaced {
-		_ = ruleSet.Close()
+	r.retireAccess.Unlock()
+	if index >= 0 {
+		entry.close()
 	}
-	for _, ruleSet := range r.RuleSets() {
-		ruleSet.Cleanup()
+}
+
+// closeRetiring closes what is still waiting, on shutdown.
+func (r *Router) closeRetiring() {
+	r.retireAccess.Lock()
+	pending := r.retiring
+	r.retiring = nil
+	r.retireAccess.Unlock()
+	for _, entry := range pending {
+		entry.close()
 	}
 }
 
