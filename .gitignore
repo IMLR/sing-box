@@ -22,3 +22,9 @@
 CLAUDE.md
 AGENTS.md
 /.claude/
+
+# AX3600 workflow outputs: left untracked they mark the build dirty
+/sing-box-linux-*
+/CrashCore.upx
+/SHA256SUMS
+/BUILD_INFO
