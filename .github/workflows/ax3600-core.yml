@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      CORE_VERSION: 1.14.2-reF1nd-ax3600-hot2
+      CORE_VERSION: 1.14.2-reF1nd-ax3600-hot3
       CORE_TAGS: with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0
     steps:
       - name: Checkout
@@ -36,6 +36,9 @@ jobs:
 
       - name: Test patched splice implementation
         run: cd third_party/sing && go test ./common/bufio
+
+      - name: Test patched QUIC send error handling
+        run: cd third_party/quic-go && go test -race -count=1 -run TestWrite .
 
       - name: Test port hopping receive recovery
         run: go test -race -tags "$CORE_TAGS" -ldflags "$(cat release/LDFLAGS)" -count=1 -timeout=60s ./.github/tests/ax3600
@@ -56,6 +59,13 @@ jobs:
 
       - name: Test Hysteria2, Gecko, port hopping and reconnect
         run: python3 .github/tests/ax3600/hysteria_smoke.py ./sing-box-linux-amd64
+
+      - name: Test that a send failing with EIO does not spin the core
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends strace
+          sudo sysctl -w kernel.yama.ptrace_scope=0
+          python3 .github/tests/ax3600/hysteria_eio.py ./sing-box-linux-amd64
 
       - name: Build sing-box
         env:
