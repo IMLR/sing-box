@@ -212,3 +212,5 @@ require (
 replace github.com/sagernet/sing => ./third_party/sing
 
 replace github.com/sagernet/quic-go => ./third_party/quic-go
+
+replace github.com/sagernet/sing-quic => ./third_party/sing-quic

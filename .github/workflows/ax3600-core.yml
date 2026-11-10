@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      CORE_VERSION: 1.14.2-reF1nd-ax3600-hot3
+      CORE_VERSION: 1.14.2-reF1nd-ax3600-hot4
       CORE_TAGS: with_quic,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0
     steps:
       - name: Checkout
@@ -66,6 +66,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends strace
           sudo sysctl -w kernel.yama.ptrace_scope=0
           python3 .github/tests/ax3600/hysteria_eio.py ./sing-box-linux-amd64
+
+      - name: Test that port hopping recovers at once after the server was unreachable
+        run: python3 .github/tests/ax3600/hysteria_unreachable.py ./sing-box-linux-amd64
 
       - name: Build sing-box
         env:
